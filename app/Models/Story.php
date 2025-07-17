@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Support\Facades\Cache;
@@ -33,6 +34,7 @@ use Orchid\Screen\AsSource;
  * - Advanced caching and performance optimizations
  * - Security validations and rate limiting
  * - Business intelligence and recommendations
+ * - **NEW: Performance Metrics Integration**
  * 
  * Business Logic:
  * - One active story at a time (daily model)
@@ -98,6 +100,7 @@ class Story extends Model implements \Orchid\Screen\AsSource
         'story_data' => 900,        // 15 minutes
         'analytics' => 3600,        // 1 hour
         'recommendations' => 7200,  // 2 hours
+        'performance_metrics' => 1800, // 30 minutes - NEW
     ];
 
     /**
@@ -110,6 +113,8 @@ class Story extends Model implements \Orchid\Screen\AsSource
         'republish_min_days' => 5,
         'performance_threshold' => 50, // percentage
         'view_rate_limit_minutes' => 60,
+        'trending_threshold' => 75, // NEW
+        'excellent_performance' => 85, // NEW
     ];
 
     /**
@@ -216,7 +221,12 @@ class Story extends Model implements \Orchid\Screen\AsSource
         'reading_equivalent',
         'status',
         'countdown_data',
-        'performance_score',
+        'performance_score', // NEW
+        'completion_rate', // NEW
+        'engagement_score', // NEW
+        'trending_score', // NEW
+        'performance_level', // NEW
+        'performance_badge', // NEW
     ];
 
     /**
@@ -273,6 +283,7 @@ class Story extends Model implements \Orchid\Screen\AsSource
 
         static::saved(function (Story $story) {
             $story->clearRelatedCaches();
+            $story->updatePerformanceMetrics(); // NEW
             $story->logAuditTrail('saved');
         });
 
@@ -353,6 +364,14 @@ class Story extends Model implements \Orchid\Screen\AsSource
         return $this->hasMany(MemberReadingHistory::class);
     }
 
+    /**
+     * Get the rating aggregate (NEW).
+     */
+    public function ratingAggregate(): HasOne
+    {
+        return $this->hasOne(StoryRatingAggregate::class);
+    }
+
     /*
     |--------------------------------------------------------------------------
     | WORD COUNT & READING ANALYTICS
@@ -427,7 +446,307 @@ class Story extends Model implements \Orchid\Screen\AsSource
 
     /*
     |--------------------------------------------------------------------------
-    | DAILY STORY BUSINESS LOGIC
+    | PERFORMANCE METRICS METHODS (NEW)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get performance score accessor.
+     */
+    protected function performanceScore(): Attribute
+    {
+        return Attribute::make(
+            get: function () {
+                return Cache::remember(
+                    "story_performance_score_{$this->id}",
+                    self::CACHE_TTL['performance_metrics'],
+                    function () {
+                        return $this->calculatePerformanceScore();
+                    }
+                );
+            }
+        );
+    }
+
+    /**
+     * Get completion rate accessor.
+     */
+    protected function completionRate(): Attribute
+    {
+        return Attribute::make(
+            get: function () {
+                return Cache::remember(
+                    "story_completion_rate_{$this->id}",
+                    self::CACHE_TTL['performance_metrics'],
+                    function () {
+                        return $this->calculateCompletionRate();
+                    }
+                );
+            }
+        );
+    }
+
+    /**
+     * Get engagement score accessor.
+     */
+    protected function engagementScore(): Attribute
+    {
+        return Attribute::make(
+            get: function () {
+                return Cache::remember(
+                    "story_engagement_score_{$this->id}",
+                    self::CACHE_TTL['performance_metrics'],
+                    function () {
+                        return $this->calculateEngagementScore();
+                    }
+                );
+            }
+        );
+    }
+
+    /**
+     * Get trending score accessor.
+     */
+    protected function trendingScore(): Attribute
+    {
+        return Attribute::make(
+            get: function () {
+                return Cache::remember(
+                    "story_trending_score_{$this->id}",
+                    self::CACHE_TTL['performance_metrics'],
+                    function () {
+                        return $this->calculateTrendingScore();
+                    }
+                );
+            }
+        );
+    }
+
+    /**
+     * Get performance level accessor.
+     */
+    protected function performanceLevel(): Attribute
+    {
+        return Attribute::make(
+            get: function () {
+                $score = $this->performance_score;
+                if ($score >= self::BUSINESS_RULES['excellent_performance']) return 'excellent';
+                if ($score >= self::BUSINESS_RULES['trending_threshold']) return 'good';
+                if ($score >= self::BUSINESS_RULES['performance_threshold']) return 'average';
+                return 'poor';
+            }
+        );
+    }
+
+    /**
+     * Get performance badge accessor.
+     */
+    protected function performanceBadge(): Attribute
+    {
+        return Attribute::make(
+            get: function () {
+                $score = $this->performance_score;
+                if ($score >= self::BUSINESS_RULES['excellent_performance']) return '🔥';
+                if ($score >= self::BUSINESS_RULES['trending_threshold']) return '📈';
+                if ($score >= self::BUSINESS_RULES['performance_threshold']) return '📊';
+                return '📉';
+            }
+        );
+    }
+
+    /**
+     * Calculate performance score.
+     */
+    private function calculatePerformanceScore(): int
+    {
+        try {
+            $totalViews = $this->storyViews()->count();
+            $totalReaders = $this->readingHistory()->distinct('member_id')->count();
+            $completedReaders = $this->readingHistory()
+                ->where('reading_progress', '>=', 100)
+                ->distinct('member_id')
+                ->count();
+
+            $completionRate = $totalReaders > 0 ? ($completedReaders / $totalReaders) * 100 : 0;
+            $averageRating = $this->ratingAggregate?->average_rating ?? 0;
+            $totalRatings = $this->ratingAggregate?->total_ratings ?? 0;
+            $daysPublished = $this->created_at->diffInDays(now());
+
+            // Calculate component scores
+            $viewsScore = min(($totalViews / 100) * 30, 30); // Max 30 points
+            $completionScore = ($completionRate / 100) * 25; // Max 25 points
+            $ratingScore = ($averageRating / 5) * 20; // Max 20 points
+            $popularityScore = min(($totalRatings / 10) * 15, 15); // Max 15 points
+            $freshnessScore = max(10 - ($daysPublished / 30), 0); // Max 10 points
+
+            return (int) round($viewsScore + $completionScore + $ratingScore + $popularityScore + $freshnessScore);
+
+        } catch (\Exception $e) {
+            Log::error('Error calculating performance score', [
+                'story_id' => $this->id,
+                'error' => $e->getMessage()
+            ]);
+            return 0;
+        }
+    }
+
+    /**
+     * Calculate completion rate.
+     */
+    private function calculateCompletionRate(): float
+    {
+        try {
+            $totalReaders = $this->readingHistory()->distinct('member_id')->count();
+            
+            if ($totalReaders === 0) {
+                return 0.0;
+            }
+
+            $completedReaders = $this->readingHistory()
+                ->where('reading_progress', '>=', 100)
+                ->distinct('member_id')
+                ->count();
+
+            return round(($completedReaders / $totalReaders) * 100, 2);
+
+        } catch (\Exception $e) {
+            Log::error('Error calculating completion rate', [
+                'story_id' => $this->id,
+                'error' => $e->getMessage()
+            ]);
+            return 0.0;
+        }
+    }
+
+    /**
+     * Calculate engagement score.
+     */
+    private function calculateEngagementScore(): float
+    {
+        try {
+            $totalViews = $this->storyViews()->count();
+            
+            if ($totalViews === 0) {
+                return 0.0;
+            }
+
+            $totalRatings = $this->ratings()->count();
+            $totalBookmarks = $this->interactions()->where('action', 'bookmark')->count();
+            $totalShares = $this->interactions()->where('action', 'share')->count();
+            
+            $totalEngagements = $totalRatings + $totalBookmarks + $totalShares;
+            
+            return round(($totalEngagements / $totalViews) * 100, 2);
+
+        } catch (\Exception $e) {
+            Log::error('Error calculating engagement score', [
+                'story_id' => $this->id,
+                'error' => $e->getMessage()
+            ]);
+            return 0.0;
+        }
+    }
+
+    /**
+     * Calculate trending score.
+     */
+    private function calculateTrendingScore(): float
+    {
+        try {
+            $recentViews = $this->storyViews()
+                ->where('viewed_at', '>=', now()->subDays(7))
+                ->count();
+            
+            $totalViews = $this->storyViews()->count();
+            $recentRatings = $this->ratings()
+                ->where('created_at', '>=', now()->subDays(7))
+                ->count();
+            
+            if ($totalViews === 0) return 0.0;
+            
+            $viewsTrend = $recentViews / max($totalViews, 1) * 100;
+            $ratingsTrend = $recentRatings * 10; // Weight recent ratings more
+            
+            return round($viewsTrend + $ratingsTrend, 2);
+
+        } catch (\Exception $e) {
+            Log::error('Error calculating trending score', [
+                'story_id' => $this->id,
+                'error' => $e->getMessage()
+            ]);
+            return 0.0;
+        }
+    }
+
+    /**
+     * Get detailed performance metrics.
+     */
+    public function getPerformanceMetrics(): array
+    {
+        return Cache::remember(
+            "story_detailed_metrics_{$this->id}",
+            self::CACHE_TTL['performance_metrics'],
+            function () {
+                $totalViews = $this->storyViews()->count();
+                $totalReaders = $this->readingHistory()->distinct('member_id')->count();
+                $completedReaders = $this->readingHistory()
+                    ->where('reading_progress', '>=', 100)
+                    ->distinct('member_id')
+                    ->count();
+
+                $completionRate = $totalReaders > 0 ? ($completedReaders / $totalReaders) * 100 : 0;
+                $averageRating = $this->ratingAggregate?->average_rating ?? 0;
+                $totalRatings = $this->ratingAggregate?->total_ratings ?? 0;
+                $performanceScore = $this->calculatePerformanceScore();
+
+                return [
+                    'views' => $totalViews,
+                    'total_readers' => $totalReaders,
+                    'completed_readers' => $completedReaders,
+                    'completion_rate' => round($completionRate, 2),
+                    'average_rating' => round($averageRating, 2),
+                    'total_ratings' => $totalRatings,
+                    'performance_score' => $performanceScore,
+                    'performance_level' => $this->performance_level,
+                    'performance_badge' => $this->performance_badge,
+                    'trending_score' => $this->trending_score,
+                    'engagement_score' => $this->engagement_score,
+                    'social_shares' => $this->interactions()->where('action', 'share')->count(),
+                    'bookmarks' => $this->interactions()->where('action', 'bookmark')->count(),
+                ];
+            }
+        );
+    }
+
+    /**
+     * Update performance metrics cache.
+     */
+    private function updatePerformanceMetrics(): void
+    {
+        $this->clearPerformanceCache();
+        
+        // Pre-calculate metrics for faster access
+        $this->performance_score;
+        $this->completion_rate;
+        $this->engagement_score;
+        $this->trending_score;
+    }
+
+    /**
+     * Clear performance cache.
+     */
+    private function clearPerformanceCache(): void
+    {
+        Cache::forget("story_performance_score_{$this->id}");
+        Cache::forget("story_completion_rate_{$this->id}");
+        Cache::forget("story_engagement_score_{$this->id}");
+        Cache::forget("story_trending_score_{$this->id}");
+        Cache::forget("story_detailed_metrics_{$this->id}");
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | EXISTING DAILY STORY BUSINESS LOGIC
     |--------------------------------------------------------------------------
     */
 
@@ -594,6 +913,28 @@ class Story extends Model implements \Orchid\Screen\AsSource
                 $subQuery->where('action', 'published')
                     ->where('created_at', '<=', now()->subDays(self::BUSINESS_RULES['republish_min_days']));
             });
+    }
+
+    /**
+     * Scope for high performing stories (NEW).
+     */
+    public function scopeHighPerforming(Builder $query): Builder
+    {
+        return $query->whereRaw('
+            (SELECT COUNT(*) FROM story_views WHERE story_views.story_id = stories.id) >= ?
+        ', [self::BUSINESS_RULES['republish_threshold_views']]);
+    }
+
+    /**
+     * Scope for trending stories (NEW).
+     */
+    public function scopeTrending(Builder $query): Builder
+    {
+        return $query->whereRaw('
+            (SELECT COUNT(*) FROM story_views 
+             WHERE story_views.story_id = stories.id 
+             AND story_views.viewed_at >= ?) > 0
+        ', [now()->subDays(7)]);
     }
 
     /*
@@ -829,22 +1170,6 @@ class Story extends Model implements \Orchid\Screen\AsSource
     }
 
     /**
-     * Get performance score.
-     */
-    protected function performanceScore(): Attribute
-    {
-        return Attribute::make(
-            get: function () {
-                $cacheKey = "story.{$this->id}.performance_score";
-                
-                return Cache::remember($cacheKey, self::CACHE_TTL['analytics'], function () {
-                    return $this->calculatePerformanceScore();
-                });
-            }
-        );
-    }
-
-    /**
      * Sanitize title input.
      */
     protected function title(): Attribute
@@ -912,7 +1237,10 @@ class Story extends Model implements \Orchid\Screen\AsSource
             
             return [
                 'should_republish' => $performance < self::BUSINESS_RULES['performance_threshold'],
-                'performance_score' => round($performance, 1),
+                'performance_score' => $this->performance_score, // NEW
+                'completion_rate' => $this->completion_rate, // NEW
+                'engagement_score' => $this->engagement_score, // NEW
+                'trending_score' => $this->trending_score, // NEW
                 'word_count' => $this->word_count,
                 'reading_level' => $this->reading_level,
                 'last_published' => $lastPublication?->created_at,
@@ -940,12 +1268,15 @@ class Story extends Model implements \Orchid\Screen\AsSource
             $performanceData = [
                 'previous_views' => $previousData['views'] ?? $this->views,
                 'previous_rating' => $this->average_rating,
+                'previous_performance_score' => $this->performance_score, // NEW
+                'previous_completion_rate' => $this->completion_rate, // NEW
+                'previous_engagement_score' => $this->engagement_score, // NEW
                 'word_count' => $this->word_count,
                 'reading_level' => $this->reading_level,
                 'republish_reason' => $notes,
                 'target_views' => $targetMetrics['views'] ?? null,
                 'target_rating' => $targetMetrics['rating'] ?? null,
-                'performance_score' => $this->performance_score,
+                'target_performance_score' => $targetMetrics['performance_score'] ?? null, // NEW
                 'baseline_date' => now()->toISOString(),
             ];
         }
@@ -1014,6 +1345,7 @@ class Story extends Model implements \Orchid\Screen\AsSource
 
             // Clear related caches
             $this->clearCache();
+            $this->clearPerformanceCache(); // NEW
 
             return true;
 
@@ -1050,6 +1382,9 @@ class Story extends Model implements \Orchid\Screen\AsSource
 
             // Update reading statistics
             MemberReadingStatistics::recordStoryCompletion($memberId, $this);
+
+            // Clear performance cache for updated metrics
+            $this->clearPerformanceCache(); // NEW
 
             Log::info('Story completion recorded', [
                 'story_id' => $this->id,
@@ -1116,6 +1451,13 @@ class Story extends Model implements \Orchid\Screen\AsSource
                 'status' => $this->status,
                 'created_at' => $this->created_at->toISOString(),
                 'updated_at' => $this->updated_at->toISOString(),
+                // NEW: Performance Metrics
+                'performance_score' => $this->performance_score,
+                'completion_rate' => $this->completion_rate,
+                'engagement_score' => $this->engagement_score,
+                'trending_score' => $this->trending_score,
+                'performance_level' => $this->performance_level,
+                'performance_badge' => $this->performance_badge,
             ];
 
             // Add member-specific data if member ID provided
@@ -1157,6 +1499,10 @@ class Story extends Model implements \Orchid\Screen\AsSource
                 'countdown' => $this->countdown_data,
                 'is_teaser' => true,
                 'status' => 'upcoming',
+                // NEW: Performance Metrics (for previous runs if republished)
+                'performance_score' => $this->performance_score,
+                'performance_level' => $this->performance_level,
+                'performance_badge' => $this->performance_badge,
             ];
         });
     }
@@ -1232,6 +1578,22 @@ class Story extends Model implements \Orchid\Screen\AsSource
         if ($this->average_rating < 3.5) {
             $suggestions[] = 'Review content quality and readability';
             $suggestions[] = 'Consider adding more engaging elements';
+        }
+
+        // NEW: Performance-based suggestions
+        if ($this->performance_score < 50) {
+            $suggestions[] = 'Overall performance needs improvement';
+            $suggestions[] = 'Consider content revision or enhancement';
+        }
+
+        if ($this->completion_rate < 60) {
+            $suggestions[] = 'Low completion rate - review story structure';
+            $suggestions[] = 'Consider reducing length or improving pacing';
+        }
+
+        if ($this->engagement_score < 20) {
+            $suggestions[] = 'Low engagement - encourage more interactions';
+            $suggestions[] = 'Add call-to-action elements';
         }
 
         // Word count analysis
@@ -1575,6 +1937,9 @@ class Story extends Model implements \Orchid\Screen\AsSource
         return [
             'expected_views_increase' => round($baselineViews * $avgImprovement - $baselineViews),
             'expected_rating_improvement' => 0.2,
+            'expected_performance_score_increase' => 15, // NEW
+            'expected_completion_rate_increase' => 10, // NEW
+            'expected_engagement_increase' => 5, // NEW
             'word_count_advantage' => $this->word_count > 800 ? 'high' : 'medium',
             'reading_level_appeal' => $this->reading_level === 'intermediate' ? 'broad' : 'niche',
             'confidence_level' => 'medium',
@@ -1611,7 +1976,6 @@ class Story extends Model implements \Orchid\Screen\AsSource
     {
         Cache::forget("story.{$this->id}.avg_rating");
         Cache::forget("story.{$this->id}.total_ratings");
-        Cache::forget("story.{$this->id}.performance_score");
         Cache::forget("story.{$this->id}.api_resource");
         Cache::forget("story.{$this->id}.teaser_resource");
         Cache::forget('stories.current_daily');
@@ -1628,10 +1992,142 @@ class Story extends Model implements \Orchid\Screen\AsSource
             'title' => $this->title,
             'word_count' => $this->word_count,
             'reading_level' => $this->reading_level,
+            'performance_score' => $this->performance_score ?? 0, // NEW
+            'completion_rate' => $this->completion_rate ?? 0, // NEW
+            'engagement_score' => $this->engagement_score ?? 0, // NEW
             'action' => $action,
             'user_id' => auth()->id(),
             'timestamp' => now()->toISOString(),
         ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | STATIC PERFORMANCE METHODS (NEW)
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Get top performing stories.
+     */
+    public static function getTopPerforming(int $limit = 10): \Illuminate\Database\Eloquent\Collection
+    {
+        $cacheKey = "stories.top_performing_{$limit}";
+
+        return Cache::remember($cacheKey, self::CACHE_TTL['analytics'], function () use ($limit) {
+            return static::with(['category', 'tags'])
+                ->where('active', true)
+                ->get()
+                ->sortByDesc(function ($story) {
+                    return $story->performance_score;
+                })
+                ->take($limit);
+        });
+    }
+
+    /**
+     * Get trending stories.
+     */
+    public static function getTrendingStories(int $limit = 10): \Illuminate\Database\Eloquent\Collection
+    {
+        $cacheKey = "stories.trending_{$limit}";
+
+        return Cache::remember($cacheKey, self::CACHE_TTL['analytics'], function () use ($limit) {
+            return static::with(['category', 'tags'])
+                ->where('active', true)
+                ->whereHas('storyViews', function ($query) {
+                    $query->where('viewed_at', '>=', now()->subDays(7));
+                })
+                ->get()
+                ->sortByDesc(function ($story) {
+                    return $story->trending_score;
+                })
+                ->take($limit);
+        });
+    }
+
+    /**
+     * Get stories needing attention.
+     */
+    public static function getStoriesNeedingAttention(int $limit = 10): \Illuminate\Database\Eloquent\Collection
+    {
+        $cacheKey = "stories.needing_attention_{$limit}";
+
+        return Cache::remember($cacheKey, self::CACHE_TTL['analytics'], function () use ($limit) {
+            return static::with(['category', 'tags'])
+                ->where('active', true)
+                ->get()
+                ->filter(function ($story) {
+                    return $story->performance_score < self::BUSINESS_RULES['performance_threshold'];
+                })
+                ->sortBy('performance_score')
+                ->take($limit);
+        });
+    }
+
+    /**
+     * Get overall platform metrics.
+     */
+    public static function getPlatformMetrics(): array
+    {
+        return Cache::remember('platform_story_metrics', self::CACHE_TTL['analytics'], function () {
+            $totalStories = static::count();
+            $activeStories = static::where('active', true)->count();
+            $totalViews = DB::table('story_views')->count();
+            $totalWords = static::sum('word_count');
+            $avgRating = DB::table('member_story_ratings')->avg('rating');
+            $totalRatings = DB::table('member_story_ratings')->count();
+
+            // NEW: Performance metrics
+            $stories = static::where('active', true)->get();
+            $avgPerformanceScore = $stories->avg(function ($story) {
+                return $story->performance_score;
+            });
+            $avgCompletionRate = $stories->avg(function ($story) {
+                return $story->completion_rate;
+            });
+            $avgEngagementScore = $stories->avg(function ($story) {
+                return $story->engagement_score;
+            });
+            $trendingCount = $stories->filter(function ($story) {
+                return $story->trending_score >= self::BUSINESS_RULES['trending_threshold'];
+            })->count();
+
+            return [
+                'total_stories' => $totalStories,
+                'active_stories' => $activeStories,
+                'total_views' => $totalViews,
+                'total_words' => $totalWords,
+                'avg_rating' => round($avgRating, 2),
+                'total_ratings' => $totalRatings,
+                'avg_performance_score' => round($avgPerformanceScore, 2), // NEW
+                'avg_completion_rate' => round($avgCompletionRate, 2), // NEW
+                'avg_engagement_score' => round($avgEngagementScore, 2), // NEW
+                'trending_count' => $trendingCount, // NEW
+                'performance_distribution' => [
+                    'excellent' => $stories->filter(fn($s) => $s->performance_level === 'excellent')->count(),
+                    'good' => $stories->filter(fn($s) => $s->performance_level === 'good')->count(),
+                    'average' => $stories->filter(fn($s) => $s->performance_level === 'average')->count(),
+                    'poor' => $stories->filter(fn($s) => $s->performance_level === 'poor')->count(),
+                ],
+            ];
+        });
+    }
+
+    /**
+     * Clear all performance caches.
+     */
+    public static function clearAllPerformanceCaches(): void
+    {
+        Cache::forget('platform_story_metrics');
+        Cache::forget('stories.top_performing_10');
+        Cache::forget('stories.trending_10');
+        Cache::forget('stories.needing_attention_10');
+        
+        // Clear individual story caches
+        static::all()->each(function ($story) {
+            $story->clearPerformanceCache();
+        });
     }
 
     /*
