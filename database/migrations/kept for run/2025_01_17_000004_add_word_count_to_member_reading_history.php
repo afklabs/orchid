@@ -1,3 +1,4 @@
+<?php
 // database/migrations/2025_01_17_000004_add_word_count_to_member_reading_history.php
 
 use Illuminate\Database\Migrations\Migration;
@@ -17,12 +18,12 @@ return new class extends Migration
                 ->default(0)
                 ->after('time_spent')
                 ->comment('Words read in this session');
-            
+
             $table->timestamp('completed_at')
                 ->nullable()
                 ->after('last_read_at')
                 ->comment('When the story was completed');
-            
+
             // Add index for completed stories
             $table->index(['member_id', 'completed_at'], 'idx_member_completed');
             $table->index(['story_id', 'completed_at'], 'idx_story_completed');
@@ -37,7 +38,7 @@ return new class extends Migration
         Schema::table('member_reading_history', function (Blueprint $table) {
             $table->dropIndex('idx_story_completed');
             $table->dropIndex('idx_member_completed');
-            
+
             $table->dropColumn(['words_read', 'completed_at']);
         });
     }

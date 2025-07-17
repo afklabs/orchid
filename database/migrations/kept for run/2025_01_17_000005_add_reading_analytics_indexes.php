@@ -1,3 +1,4 @@
+<?php
 // database/migrations/2025_01_17_000006_create_reading_analytics_materialized_views.php
 
 use Illuminate\Database\Migrations\Migration;
@@ -13,7 +14,7 @@ return new class extends Migration
         // Create view for daily analytics
         DB::statement("
             CREATE OR REPLACE VIEW v_daily_reading_analytics AS
-            SELECT 
+            SELECT
                 date,
                 COUNT(DISTINCT member_id) as active_readers,
                 SUM(words_read) as total_words,
@@ -29,10 +30,10 @@ return new class extends Migration
         // Create view for member rankings
         DB::statement("
             CREATE OR REPLACE VIEW v_member_rankings AS
-            SELECT 
+            SELECT
                 m.id,
                 m.name,
-                m.avatar_url,
+                m.avatar,
                 COALESCE(SUM(mrs.words_read), 0) as total_words_read,
                 COALESCE(SUM(mrs.stories_completed), 0) as total_stories,
                 COALESCE(MAX(mrs.reading_streak_days), 0) as best_streak,
@@ -41,13 +42,13 @@ return new class extends Migration
                 COALESCE(m.total_points, 0) as achievement_points
             FROM members m
             LEFT JOIN member_reading_statistics mrs ON m.id = mrs.member_id
-            GROUP BY m.id, m.name, m.avatar_url, m.total_points
+            GROUP BY m.id, m.name, m.avatar, m.total_points
         ");
 
         // Create view for story performance
         DB::statement("
             CREATE OR REPLACE VIEW v_story_performance AS
-            SELECT 
+            SELECT
                 s.id,
                 s.title,
                 s.word_count,
@@ -63,7 +64,7 @@ return new class extends Migration
             LEFT JOIN categories c ON s.category_id = c.id
             LEFT JOIN member_reading_history mrh ON s.id = mrh.story_id
             LEFT JOIN member_story_ratings msr ON s.id = msr.story_id
-            GROUP BY s.id, s.title, s.word_count, s.reading_level, 
+            GROUP BY s.id, s.title, s.word_count, s.reading_level,
                      s.views, s.category_id, c.name
         ");
     }
