@@ -524,7 +524,7 @@ class StoryEditScreen extends Screen
     /**
      * Duplicate story.
      */
-    public function duplicateStory(): void
+    public function duplicateStory()
     {
         try {
             DB::beginTransaction();
@@ -557,7 +557,7 @@ class StoryEditScreen extends Screen
     /**
      * Delete story.
      */
-    public function deleteStory(): void
+    public function deleteStory()
     {
         try {
             DB::beginTransaction();

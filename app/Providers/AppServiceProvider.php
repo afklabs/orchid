@@ -1,4 +1,3 @@
-// app/Providers/AppServiceProvider.php - Service Registration
 <?php
 
 namespace App\Providers;
@@ -6,6 +5,11 @@ namespace App\Providers;
 use Illuminate\Support\ServiceProvider;
 use App\Services\{WordCountService, ReadingAnalyticsService};
 
+/**
+ * Application Service Provider - Service Registration
+ * 
+ * Registers word count and reading analytics services
+ */
 class AppServiceProvider extends ServiceProvider
 {
     /**

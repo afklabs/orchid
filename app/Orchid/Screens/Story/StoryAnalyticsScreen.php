@@ -1,7 +1,4 @@
-// app/Orchid/Screens/Story/StoryAnalyticsScreen.php - Story Analytics Screen
 <?php
-
-declare(strict_types=1);
 
 namespace App\Orchid\Screens\Story;
 
